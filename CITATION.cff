@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the associated paper."
+title: "Bandwidth-Aware Constraint Scheduling for Trust-Weighted Multi-Robot Map Fusion under Duty-Cycle-Limited Wireless Links"
+abstract: >-
+  Simulation backbone for Bandwidth-Aware Constraint Scheduling (BACS), which
+  moves the trust decision from the fusion receiver to the transmitter under
+  duty-cycle-limited (LoRa EU868) wireless links.
+authors:
+  - name: "Author names withheld for double-anonymous review"
+version: 0.1.0
+date-released: 2026-07-24
+license: MIT
+keywords:
+  - multi-robot SLAM
+  - constraint scheduling
+  - duty cycle
+  - LoRa
+  - information gain
+  - trust weighting
+  - ROS 2
