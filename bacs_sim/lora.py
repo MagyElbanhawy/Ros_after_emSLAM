@@ -32,15 +32,43 @@ def time_on_air(payload_bytes: int, cfg: LoRaConfig) -> float:
     return t_pre + payload_symbols(payload_bytes, cfg) * t_sym
 
 
+def regulatory_budget(window_s: float, cfg: LoRaConfig) -> float:
+    """
+    B_reg = delta * W.  Eq. (1).
+
+    The regulatory ceiling is a *per-device* airtime limit: EU868 g1 caps each
+    transmitter at delta = 1% occupancy of any window, independent of how many
+    other devices share the band.
+    """
+    return cfg.duty_cycle * window_s
+
+
 def airtime_budget(window_s: float, cfg: LoRaConfig, n_robots: int = 1) -> float:
     """
-    B(W) = delta * W.  Eq. (1).
+    Usable per-robot airtime, B_i = alpha_i * B_reg with sum_i alpha_i <= 1.
 
-    With n_robots sharing one channel and no coordination protocol, the usable
-    per-robot share approaches delta*W/N.  This division is the mechanism
-    behind Hypothesis H3.
+    The regulatory limit and the per-robot *usable* budget are distinct. The
+    former, B_reg = delta*W, applies to each device. The latter depends on how
+    the shared channel is coordinated:
+
+      * "shared_equal" (default): N robots contend for one sub-band with no
+        access protocol, so collision avoidance forces a system-level split.
+        Equal sharing gives alpha_i = 1/N and B_i = delta*W/N -- the division
+        that drives Hypothesis H3. A non-default `cfg.alpha` overrides 1/N.
+      * "per_device": orthogonal channels or a TDMA schedule let every robot use
+        its full regulatory ceiling, alpha_i = 1, B_i = delta*W.
+
+    Keeping the split explicit avoids conflating the legal duty cycle with the
+    coordination assumption, which are separate modelling choices.
     """
-    return cfg.duty_cycle * window_s / max(n_robots, 1)
+    b_reg = regulatory_budget(window_s, cfg)
+    share = getattr(cfg, "channel_share", "shared_equal")
+    if share == "per_device":
+        return b_reg
+    alpha = getattr(cfg, "alpha", 0.0)
+    if alpha and alpha > 0.0:
+        return alpha * b_reg
+    return b_reg / max(n_robots, 1)
 
 
 # ------------------------------------------------------------------- channel

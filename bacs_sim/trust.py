@@ -76,6 +76,26 @@ def gamma_derived(world: WorldConfig, cfg: TrustConfig) -> float:
     return float(np.clip(g, cfg.gamma_min, cfg.gamma_max))
 
 
+def gamma_from_deferral(mean_delay: float, cfg: TrustConfig) -> float:
+    """
+    gamma = ln2 / T_defer.
+
+    Sets the trust half-life equal to the timescale on which a candidate waits
+    for airtime, rather than the odometry-drift timescale of Eq. (16). Section
+    6.1 shows deferral dominates packet age under duty-cycle compliance, so this
+    is the timescale gamma should track. Clipped to the configured range.
+    """
+    if mean_delay <= 1e-9:
+        return float(np.clip(cfg.gamma, cfg.gamma_min, cfg.gamma_max))
+    return float(np.clip(np.log(2.0) / mean_delay, cfg.gamma_min, cfg.gamma_max))
+
+
+def gamma_deferral_derived(cfg: TrustConfig) -> float:
+    """Static deferral rule: gamma = ln2 / t_defer_prior, using the a-priori
+    deferral estimate from Section 6.1 (~155 s) rather than an online measurement."""
+    return gamma_from_deferral(cfg.t_defer_prior, cfg)
+
+
 class GammaController:
     """
     Maintains the decay coefficient in use.
@@ -89,8 +109,12 @@ class GammaController:
     def __init__(self, cfg: TrustConfig, world: WorldConfig):
         self.cfg = cfg
         self.world = world
-        self.base = (gamma_derived(world, cfg)
-                     if cfg.gamma_rule in ("derived", "adaptive") else cfg.gamma)
+        if cfg.gamma_rule in ("derived", "adaptive"):
+            self.base = gamma_derived(world, cfg)
+        elif cfg.gamma_rule in ("deferral_derived", "deferral_adaptive"):
+            self.base = gamma_deferral_derived(cfg)
+        else:
+            self.base = cfg.gamma
         self.value = self.base
         self.mu_dt = None
         self.var_dt = None
@@ -111,12 +135,23 @@ class GammaController:
             self.var_dt = (1 - a) * (self.var_dt + a * d * d)
 
     def update(self):
-        """gamma_t = gamma* (1 + kappa * CV).  Eq. (17)."""
-        if self.cfg.gamma_rule != "adaptive" or self.mu_dt is None or self.mu_dt <= 1e-9:
-            self.value = self.base
-        else:
+        """Recompute the decay coefficient from the rule in force.
+
+        "adaptive"          Eq. (17): gamma* modulated by the delay CV.
+        "deferral_adaptive" gamma_t = clip(ln2 / measured mean deferral delay);
+                            the mean is the EWMA of delivered end-to-end delay,
+                            which under duty-cycle compliance is dominated by
+                            airtime deferral.
+        anything else       hold the base value.
+        """
+        rule = self.cfg.gamma_rule
+        if rule == "adaptive" and self.mu_dt is not None and self.mu_dt > 1e-9:
             cv = np.sqrt(max(self.var_dt, 0.0)) / self.mu_dt
             self.value = float(np.clip(self.base * (1.0 + self.cfg.kappa * cv),
                                        self.cfg.gamma_min, self.cfg.gamma_max))
+        elif rule == "deferral_adaptive" and self.mu_dt is not None and self.mu_dt > 1e-9:
+            self.value = gamma_from_deferral(self.mu_dt, self.cfg)
+        else:
+            self.value = self.base
         self.history.append(self.value)
         return self.value

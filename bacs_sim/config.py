@@ -20,6 +20,13 @@ class LoRaConfig:
     low_data_rate_opt: bool = False
     duty_cycle: float = 0.01    # delta, regulatory ceiling (EU868 g1)
     ack_timeout_s: float = 0.5  # T_to in Eq. (6)
+    # Channel-access assumption used to turn the *per-device* regulatory ceiling
+    # into a *per-robot usable* budget (see lora.airtime_budget):
+    #   "shared_equal": one sub-band shared by N robots with no coordination,
+    #                   equal split alpha_i = 1/N  (the H3 mechanism);
+    #   "per_device":   orthogonal channels / TDMA, each robot keeps delta*W.
+    channel_share: str = "shared_equal"
+    alpha: float = 0.0          # explicit per-robot share; <=0 means auto (1/N)
 
 
 @dataclass
@@ -44,11 +51,27 @@ class TrustConfig:
     gamma: float = 0.10         # temporal decay [1/s]
     accept_threshold: float = 0.10
     floor: float = 0.01         # EMRMF never discards entirely
-    gamma_rule: str = "fixed"   # {"fixed", "derived", "adaptive"}
+    # gamma_rule:
+    #   "fixed"             use `gamma` as given
+    #   "derived"           Eq. (16), gamma* from odometry drift (falsified, H1)
+    #   "adaptive"          Eq. (17), derived gamma modulated by delay CV
+    #   "deferral_derived"  gamma = ln2 / t_defer_prior  (airtime-queueing scale)
+    #   "deferral_adaptive" gamma_t = clip(ln2 / measured mean deferral delay)
+    gamma_rule: str = "fixed"
     kappa: float = 1.0          # Eq. (17) sensitivity
-    gamma_min: float = 0.01
+    # Clip range for derived/adaptive rules. The floor is deliberately below the
+    # drift-derived scale: the empirical optimum (~0.003) and the deferral-
+    # derived value (ln2/155 ~ 0.0045) both sit under the 0.01 that a drift-
+    # calibrated floor would impose, so a floor at 0.01 would hide the very
+    # regime Section 6.4 identifies as correct.
+    gamma_min: float = 0.001
     gamma_max: float = 2.00
     ewma_alpha: float = 0.2
+    # Prior on mean deferral delay [s] for the deferral-derived rule. Defaults to
+    # the ~155 s airtime-queueing time measured in Section 6.1; ln2/155 ~ 0.0045,
+    # an order of magnitude below Eq. (16)'s gamma*=0.033 and close to the
+    # empirical optimum of 0.003.
+    t_defer_prior: float = 155.0
 
 
 @dataclass
@@ -59,6 +82,11 @@ class InfoGainConfig:
     w_loop: float = 0.30
     cell_size: float = 0.5      # coverage bitmap resolution [m]
     support_radius: float = 2.0 # cells within this radius count as covered
+    # Observability term (BACS+, Section 4.4 extension). O_ij grows when the
+    # robot pair (i, j) is poorly constrained; added to the surrogate only when
+    # the scheduler enables it (policy "bacs_plus" or use_observability=True).
+    w_obs: float = 0.30
+    obs_ref: float = 6.0        # constraints per pair at which O_ij ~ 1/e
 
 
 @dataclass
@@ -74,6 +102,7 @@ class SchedulerConfig:
     use_ageing: bool = True
     unlimited_budget: bool = False
     trust_gate: float = 0.0     # if >0, theta_hat acts as a filter, not a rank key
+    use_observability: bool = False  # add the BACS+ observability term to I_hat
 
 
 @dataclass

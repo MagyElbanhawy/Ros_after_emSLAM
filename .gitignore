@@ -15,10 +15,13 @@ env/
 .ruff_cache/
 .ipynb_checkpoints/
 
-# Experiment outputs
+# Experiment outputs (ad-hoc runs). Frozen manuscript outputs under
+# paper_results/ are tracked deliberately and exempted below.
 *.csv
 results/
 figures/
+!paper_results/
+!paper_results/**
 
 # OS / editor
 .DS_Store

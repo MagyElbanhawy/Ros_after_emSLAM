@@ -27,8 +27,11 @@ p = 0.031).
 
 ```
 bacs_sim/            simulation package (module layout mirrors the manuscript)
-scripts/reproduce.py CLI that regenerates the paper's experiment tables (CSV)
+scripts/             reproduce.py (S1-S6) + generate_paper_results.py (BACS+ additions)
 tests/               smoke + reproducibility tests
+paper_results/       frozen CSVs backing the manuscript tables
+ros2_ws/             reference ROS 2 scheduler node (bacs_scheduler) for deployment
+hardware/            LoRa parameters + physical-experiment protocol
 paper/               the full manuscript (BACS_full_paper.docx)
 ```
 
@@ -61,7 +64,22 @@ print(result.pose_rmse, result.trust_yield)
 ```
 
 Available policies: `send_all`, `fifo`, `random`, `greedy_trust`, `greedy_info`,
-`bacs`, `bacs_gated`. Each run is ~4–6 s (2 robots, 12-min session).
+`bacs`, `bacs_gated`, `bacs_plus`. Each run is ~4–6 s (2 robots, 12-min session).
+
+### BACS+ (Observability-Aware BACS)
+
+The plain scheduler's advantage reverses beyond three robots because the
+information surrogate rewards coverage, not graph observability. `bacs_plus`
+adds an observability term `O_ij = exp(-n_ij / n_ref)` that steers airtime toward
+under-constrained robot pairs, and pairs naturally with the corrected,
+deferral-derived decay coefficient:
+
+```python
+cfg = SimConfig()
+cfg.scheduler.policy = "bacs_plus"       # enables the observability term
+cfg.trust.gamma_rule = "deferral_derived" # gamma = ln2 / T_defer ~ 0.0045
+result = run(cfg, precomputed=precompute(cfg))
+```
 
 ## Reproducing the paper
 
@@ -82,22 +100,49 @@ python scripts/reproduce.py --seeds 8       # more seeds
 
 Each scenario writes one CSV into `results/`.
 
+The BACS+ / validation additions have their own generator, which writes frozen
+CSVs into `paper_results/`:
+
+```bash
+python scripts/generate_paper_results.py   # progression, S7, S8, S9
+```
+
+| Scenario | What it measures |
+|---|---|
+| `progression` | EMRMF-original → compliant FIFO → BACS → BACS+ (one change per stage) |
+| `s7` | Spearman ρ between the surrogate and exact mutual information, by team size |
+| `s8` | FIFO vs BACS vs BACS+ pose RMSE across N = 2..5 |
+| `s9` | decay-coefficient rules: drift (Eq. 16) vs deferral-derived vs adaptive |
+
+## Deployment (ROS 2)
+
+`ros2_ws/src/bacs_scheduler` is a reference ROS 2 node that runs the **same**
+decision functions on a real EMRMF pipeline (candidates in → selected
+constraints out, one selection per duty-cycle window). It is a build-ready
+scaffold, not yet run on hardware; see its README and `hardware/` for the LoRa
+parameters and physical-experiment protocol.
+
 ## Key findings
 
 1. **Staleness is queueing, not propagation.** Under 1% duty cycle, airtime
    deferral contributes ~155 s to packet age; the 0.05–0.2 s channel delays
    commonly studied are three orders of magnitude smaller and have no measurable
    effect on accuracy.
-2. **The closed-form decay coefficient (Eq. 16) is falsified (H1).** It predicts
-   γ\* = 0.033; the empirical optimum is 0.003 — it anchors to the odometry-drift
-   timescale when it should anchor to the airtime-queueing timescale.
+2. **The closed-form decay coefficient (Eq. 16) is falsified (H1) — and
+   corrected.** It predicts γ\* = 0.033; the empirical optimum is 0.003 — it
+   anchors to the odometry-drift timescale when it should anchor to the
+   airtime-queueing timescale. The `deferral_derived` rule (γ = ln2 / T_defer ≈
+   0.0045) makes that correction and recovers near-optimal RMSE without tuning.
 3. **Multiplying trust × info gain (Eq. 13) is structurally unsound.** Predicted
    trust spans two decades while the info surrogate is bounded in [0, 1], so the
    product is trust-dominated. Use trust as an admissibility **gate** and rank by
    information density (`bacs_gated`).
 4. **The advantage does not scale past three robots** (29.5% at 2 → reverses to
    −22.6% at 5); the info surrogate does not capture the coverage/observability
-   tension that emerges as teams grow.
+   tension that emerges as teams grow. **`bacs_plus`** adds an observability term
+   to target under-constrained robot pairs; scenarios **S7** (surrogate vs exact
+   information) and **S8** (RMSE across team size) quantify the gap and whether
+   the term closes it.
 
 ## Tests
 

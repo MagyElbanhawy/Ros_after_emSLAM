@@ -15,6 +15,7 @@ from .world import build_world, generate_candidates, relative, wrap
 from .lora import Channel, time_on_air, airtime_budget
 from .trust import GammaController, predicted_delay, predicted_trust, server_trust
 from .infogain import CoverageMap, surrogate_info
+from .observability import PairObservability
 from .schedulers import schedule, compute_utility
 from .posegraph import PoseGraph
 from .agents import make_agent
@@ -47,9 +48,14 @@ def _odometry_information(cfg):
                     1.0 / max(cfg.meas_sigma_theta ** 2, 1e-9)])
 
 
-def run(cfg: SimConfig, precomputed=None) -> RunResult:
+def run(cfg: SimConfig, precomputed=None, collect_graph: bool = False) -> RunResult:
     rng = np.random.default_rng(cfg.seed)
     w = cfg.world
+    # BACS+ observability term is active for the bacs_plus policy or when
+    # explicitly switched on for an ablation.
+    use_obs = (cfg.scheduler.use_observability
+               or cfg.scheduler.policy == "bacs_plus")
+    pair_obs = PairObservability(cfg.infogain.obs_ref)
 
     if precomputed is None:
         truths = build_world(w, rng)
@@ -128,7 +134,7 @@ def run(cfg: SimConfig, precomputed=None) -> RunResult:
                         acc += time_on_air(c.payload_bytes, cfg.lora)
                 _score_batch(order, queue_of, cfg, gamma, gamma_ctl, truths,
                              coverage[rid], degree[rid], agents[rid], rid,
-                             map_age, w, fused)
+                             map_age, w, fused, pair_obs, use_obs)
             if cfg.scheduler.expire_below_trust:
                 pending[rid] = [c for c in pending[rid]
                                 if c.theta_hat >= cfg.trust.floor * 1.5]
@@ -159,6 +165,7 @@ def run(cfg: SimConfig, precomputed=None) -> RunResult:
                     delivered.append(c)
                     coverage[rid].mark(truths[rid].odom[c.idx_from][:2])
                     degree[rid][c.idx_from] += 1
+                    pair_obs.mark(c.rid_from, c.rid_to)
 
             rest = []
             for c in pending[rid]:
@@ -190,7 +197,7 @@ def run(cfg: SimConfig, precomputed=None) -> RunResult:
 
     # ---------------------------------------------- final global optimisation
     thetas = [c.theta for c in delivered]
-    X, _ = graph.optimize()
+    X, H_final = graph.optimize()
 
     # ------------------------------------------------------------- evaluation
     errs = []
@@ -243,6 +250,14 @@ def run(cfg: SimConfig, precomputed=None) -> RunResult:
         gamma_final=float(gamma_ctl.value),
         dt_pred_bias=float(np.mean(dt_errors)) if dt_errors else float("nan"),
     )
+    if collect_graph:
+        # Exposed for the S7 surrogate-validation experiment, which needs the
+        # converged graph, its Hessian, and the delivered constraints to compute
+        # exact mutual information post hoc.
+        res.extras["graph"] = graph
+        res.extras["hessian"] = H_final
+        res.extras["delivered"] = delivered
+        res.extras["omega"] = om
     return res
 
 
@@ -279,7 +294,7 @@ def precompute(cfg: SimConfig):
 
 
 def _score_batch(cands, queue_of, cfg, gamma, gamma_ctl, truths, cov, degree,
-                 agent, rid, map_age, w, fused):
+                 agent, rid, map_age, w, fused, pair_obs=None, use_obs=False):
     """Populate theta_hat, info_hat and utility for one window's candidates."""
     for c in cands:
         # Expected further deferral: with an oversupply ratio R, a candidate
@@ -296,7 +311,8 @@ def _score_batch(cands, queue_of, cfg, gamma, gamma_ctl, truths, cov, degree,
         nov = cov.novelty(truths[rid].odom[c.idx_from][:2])
         deg = int(degree[c.idx_from])
         loop = abs(truths[rid].t[c.idx_from] - truths[c.rid_to].t[c.idx_to])
-        ig = surrogate_info(nov, deg, loop, cfg.infogain)
+        obs = pair_obs.score(c.rid_from, c.rid_to) if (use_obs and pair_obs) else 0.0
+        ig = surrogate_info(nov, deg, loop, cfg.infogain, observability=obs)
         th, ig = agent.on_declare(th, ig)
         c.theta_hat, c.info_hat = th, ig
         c.utility = compute_utility(c, cfg.scheduler, cfg.lora)
