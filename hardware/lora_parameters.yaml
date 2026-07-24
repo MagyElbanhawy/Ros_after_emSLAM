@@ -1,0 +1,34 @@
+# LoRa radio configuration for the BACS field deployment.
+#
+# These values match the closed-form airtime model in bacs_sim/lora.py
+# (Eqs. 2-4). At SF7/BW125 a 52-byte constraint packet occupies the channel for
+# ~102.7 ms, so the 1% EU868 g1 duty cycle permits ~5.8 packets/min per device.
+
+radio:
+  module: "RYLR998"          # Reyax UART LoRa module (SX1262)
+  frequency_hz: 868100000    # EU868 g1 sub-band
+  spreading_factor: 7        # SF7..SF12; the paper's canonical config is SF7
+  bandwidth_hz: 125000       # 125 kHz
+  coding_rate: "4/5"         # cr index 1 in the model (4/(4+1))
+  preamble_symbols: 8
+  explicit_header: true
+  crc: true
+  tx_power_dbm: 14           # 25 mW ERP ceiling for EU868 g1
+
+regulatory:
+  band: "EU868 g1"
+  duty_cycle: 0.01           # delta: 1% channel occupancy per device per hour
+  # Per-device ceiling. With N robots sharing one sub-band and no coordination,
+  # the usable per-robot budget is delta/N (channel_share: shared_equal in the
+  # simulator). Use orthogonal sub-bands or a TDMA schedule for per_device.
+  channel_share: "shared_equal"
+
+packet:
+  base_bytes: 28             # relative transform + ids + timestamp
+  descriptor_bytes: 24       # association descriptor
+  # Effective payload ~52 B; time_on_air(52) ~ 0.1027 s at SF7/BW125.
+
+scheduler:
+  policy: "bacs_plus"
+  window_s: 60.0             # duty-cycle accounting window W
+  gamma_rule: "deferral_derived"

@@ -11,7 +11,7 @@ from .config import SchedulerConfig
 from .lora import time_on_air
 
 POLICIES = ["send_all", "fifo", "random", "greedy_trust", "greedy_info",
-            "bacs", "bacs_gated"]
+            "bacs", "bacs_gated", "bacs_plus"]
 
 
 def _fits(chosen, cand, budget, lora):
@@ -62,12 +62,16 @@ def schedule(cands, budget, cfg: SchedulerConfig, lora, rng: np.random.Generator
     if cfg.policy == "bacs":
         return _knapsack_greedy(cands, budget, lora)
 
-    if cfg.policy == "bacs_gated":
+    if cfg.policy in ("bacs_gated", "bacs_plus"):
         # Predicted trust used as an admissibility filter rather than a ranking
         # key, then ranked by information density.  Motivated by the finding
         # that ranking on theta_hat is self-confirming: it favours constraints
         # agreeing with the robot's current estimate, which are precisely the
         # ones carrying least corrective information.
+        #
+        # "bacs_plus" uses the identical scheduling mechanism; the difference is
+        # in info_hat itself, which carries the observability term (set by the
+        # simulator when use_observability is enabled for this policy).
         gate = cfg.trust_gate if cfg.trust_gate > 0 else 0.05
         keep = [c for c in cands if c.theta_hat >= gate] or list(cands)
         return _pack_by_key(keep, lambda c: c.info_hat / max(time_on_air(c.payload_bytes, lora), 1e-9),

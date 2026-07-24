@@ -10,13 +10,33 @@ Implements the components defined in Paper A, Section 3:
   Eq. (11)-(12) information gain and surrogate
   Eq. (16)-(17) gamma design rule and online adaptation
 
-SCOPE NOTE
-----------
-This module simulates the SCHEDULING AND COMMUNICATION LAYER only. It computes
-quantities that are genuine properties of that layer: airtime, delay, packet
-loss, trust scores, delivered information, starvation. It does NOT simulate
-SLAM and does NOT produce pose RMSE. Any mapping from delivered information to
-trajectory error must come from Gazebo or physical experiments.
+SCOPE NOTE  --  which simulator produces which table
+------------------------------------------------------
+This repository contains two deliberately separate models. This one,
+`bacs_sim.model`, is a SELF-CONTAINED COMMUNICATION-LAYER reference: airtime,
+delay, packet loss, trust scores, delivered information, starvation. It does
+NOT simulate SLAM and does NOT produce pose RMSE. It exists as a compact,
+readable statement of the closed-form quantities of Section 3 (its own
+LoRaConfig/TrustParams/Predictor are intentionally standalone and are NOT
+imported by the rest of the package), and as the layer a hardware bridge would
+mirror.
+
+Every number reported in the manuscript -- every pose_rmse, align_rmse,
+trust_yield, and all of Tables/Scenarios S1-S9 -- comes from the CANONICAL
+full-pipeline simulator, which is the OTHER set of modules:
+
+    world.py  -> ground truth, odometry drift, candidate generation
+    lora.py   -> airtime budget and channel  (Eqs. 1-4)
+    trust.py  -> server and predicted trust, gamma rules  (Eqs. 5-9, 15-17)
+    infogain.py, observability.py -> Eq. 12 surrogate and the BACS+ term
+    schedulers.py -> the policies  (Eqs. 13-14)
+    posegraph.py  -> the SE(2) weighted Gauss-Newton back-end
+    simulator.py  -> the windowed loop that ties them together and reports RMSE
+    experiments.py -> the S1-S9 runners
+
+`bacs_sim.model` and the canonical pipeline share the same equations by
+construction but do not share code, so if you change a formula, change it in
+both. Nothing here is on the path that generates a manuscript table.
 """
 
 from __future__ import annotations

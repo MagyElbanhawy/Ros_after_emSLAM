@@ -1,0 +1,8 @@
+bacs_scheduler:
+  ros__parameters:
+    robot_id: 0
+    n_robots: 2
+    policy: "bacs_plus"     # {fifo, bacs, bacs_gated, bacs_plus, ...}
+    window_s: 60.0          # duty-cycle window W [s]
+    duty_cycle: 0.01        # delta, EU868 g1 regulatory ceiling
+    sf: 7                   # LoRa spreading factor

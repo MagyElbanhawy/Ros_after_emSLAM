@@ -7,14 +7,18 @@ S3  channel robustness
 S4  decay coefficient study (tests H1)
 S5  utility ablation
 S6  scalability (tests H3)
+S7  information-surrogate validation (Spearman rho vs exact MI)
+S8  observability ablation (BACS vs BACS+ across team size)
+S9  decay-coefficient rule comparison (deferral vs drift derivations)
 """
 import numpy as np
 import pandas as pd
 from dataclasses import replace
 
 from .config import SimConfig
-from .simulator import run, precompute
-from .trust import gamma_derived
+from .simulator import run, precompute, _odometry_information
+from .trust import gamma_derived, gamma_deferral_derived
+from .infogain import exact_info_from_cov, rank_correlation
 from .schedulers import POLICIES
 
 
@@ -200,3 +204,204 @@ def wilcoxon(a, b):
         return dict(W=np.nan, p=np.nan, n=int(m.sum()))
     st = _w(a[m], b[m])
     return dict(W=float(st.statistic), p=float(st.pvalue), n=int(m.sum()))
+
+
+# ------------------------------------------------------------------------ S7
+def s7_surrogate_validation(seeds=range(3), counts=(2, 3, 4, 5),
+                            policy="bacs_gated", session_s=480.0):
+    """Validate the Eq. (12) surrogate against the exact information of Eq. (11).
+
+    For each run we take the delivered constraints, recover the marginal
+    covariance of every constrained relative pose from the converged graph
+    Hessian, evaluate exact mutual information, and correlate it (Spearman rho)
+    with the surrogate score the scheduler used. Reported per team size, because
+    Section 6.5 conjectures that surrogate fidelity degrades as N grows and that
+    this is why the scheduling advantage reverses.
+    """
+    recs = []
+    for n in counts:
+        for s in seeds:
+            c = _mk(seed=s, n_robots=n)
+            c.world.session_s = session_s
+            c.scheduler.policy = policy
+            pre = precompute(c)
+            r = run(c, precomputed=pre, collect_graph=True)
+            graph = r.extras["graph"]
+            H = r.extras["hessian"]
+            omega = r.extras["omega"]
+            delivered = r.extras["delivered"]
+            rho, npairs = _surrogate_rho(graph, H, omega, delivered)
+            recs.append(dict(n_robots=n, seed=s, rho=rho, n_pairs=npairs,
+                             n_delivered=r.n_delivered, pose_rmse=r.pose_rmse))
+    return _agg(recs, "n_robots")
+
+
+def _surrogate_rho(graph, H, omega, delivered):
+    """Spearman rho between surrogate info and exact MI over delivered edges."""
+    if H is None or not delivered:
+        return float("nan"), 0
+    Hd = H.toarray() if hasattr(H, "toarray") else np.asarray(H)
+    try:
+        Sigma = np.linalg.inv(Hd + 1e-9 * np.eye(Hd.shape[0]))
+    except np.linalg.LinAlgError:
+        return float("nan"), 0
+    surro, exact = [], []
+    for c in delivered:
+        i = graph.idx((c.rid_from, c.idx_from))
+        j = graph.idx((c.rid_to, c.idx_to))
+        if i is None or j is None:
+            continue
+        surro.append(c.info_hat)
+        exact.append(exact_info_from_cov(Sigma, i, j, omega))
+    return rank_correlation(surro, exact), len(surro)
+
+
+# ------------------------------------------------------------------------ S8
+def s8_observability(seeds=range(5), counts=(2, 3, 4, 5), session_s=480.0):
+    """Observability ablation: does the BACS+ term recover the large-team regime?
+
+    Compares FIFO, plain gated BACS, and BACS+ across team size. The plain
+    scheduler's advantage over FIFO is known to reverse beyond three robots
+    (H3); this measures whether adding the observability term keeps pose RMSE
+    below FIFO where the plain surrogate does not.
+    """
+    recs = []
+    for n in counts:
+        for s in seeds:
+            base = _mk(seed=s, n_robots=n)
+            base.world.session_s = session_s
+            pre = precompute(base)
+            for p in ("fifo", "bacs_gated", "bacs_plus"):
+                c = SimConfig()
+                c.seed = s
+                c.world.n_robots = n
+                c.world.session_s = session_s
+                c.scheduler.policy = p
+                # Use the corrected (deferral-derived) decay coefficient on every
+                # arm so the observability comparison is not confounded by an
+                # uncalibrated gamma.
+                c.trust.gamma_rule = "deferral_derived"
+                r = run(c, precomputed=pre)
+                recs.append(dict(n_robots=n, policy=p, seed=s,
+                                 pose_rmse=r.pose_rmse, align_rmse=r.align_rmse,
+                                 trust_yield=r.trust_yield,
+                                 n_delivered=r.n_delivered))
+    return _agg(recs, ["n_robots", "policy"])
+
+
+# ------------------------------------------------------------------------ S9
+def s9_deferral_gamma(seeds=range(5), policy="bacs_gated"):
+    """Compare decay-coefficient rules, including the corrected deferral rules.
+
+    Rows: fixed at the empirical optimum, the original drift derivation (Eq. 16)
+    and its adaptive variant (both falsified in S4), and the two deferral-based
+    rules that anchor gamma to the airtime-queueing timescale instead.
+    """
+    variants = [
+        ("fixed 0.003",        dict(gamma_rule="fixed", gamma=0.003)),
+        ("drift derived",      dict(gamma_rule="derived")),
+        ("drift adaptive",     dict(gamma_rule="adaptive")),
+        ("deferral derived",   dict(gamma_rule="deferral_derived")),
+        ("deferral adaptive",  dict(gamma_rule="deferral_adaptive")),
+    ]
+    cfgs, names = [], []
+    for name, kw in variants:
+        c = SimConfig()
+        c.scheduler.policy = policy
+        for k, v in kw.items():
+            setattr(c.trust, k, v)
+        c.__dict__["_name"] = name
+        cfgs.append(c)
+        names.append(name)
+    recs = _sweep(cfgs, seeds, label_fn=lambda c: dict(rule=c.__dict__.get("_name")))
+    out = _agg(recs, "rule")
+    order = {n: i for i, n in enumerate(names)}
+    out["_o"] = out["rule"].map(order)
+    out = out.sort_values("_o").drop(columns="_o").reset_index(drop=True)
+    base = SimConfig()
+    out.attrs["gamma_drift"] = gamma_derived(base.world, base.trust)
+    out.attrs["gamma_deferral"] = gamma_deferral_derived(base.trust)
+    return out
+
+
+# --------------------------------------------------------------- EMRMF baseline
+def emrmf_baseline() -> SimConfig:
+    """The parent framework as-is: FIFO transmission, trust-weighted fusion, and
+    the original drift-derived decay coefficient (Eq. 16). The reference point
+    the BACS progression is measured against."""
+    c = SimConfig()
+    c.scheduler.policy = "fifo"
+    c.trust.gamma_rule = "derived"
+    return c
+
+
+def progression(seeds=range(5)):
+    """Research progression: EMRMF-original -> compliant FIFO -> BACS -> BACS+.
+
+    Each stage changes exactly one thing so the contribution of each step is
+    legible: the recalibrated (deferral) gamma, then the gated scheduler, then
+    the observability term.
+    """
+    stages = []
+
+    s0 = emrmf_baseline()
+    s0.__dict__["_name"] = "EMRMF-original (FIFO, drift gamma)"
+    stages.append(s0)
+
+    s1 = SimConfig()
+    s1.scheduler.policy = "fifo"
+    s1.trust.gamma_rule = "deferral_derived"
+    s1.__dict__["_name"] = "compliant FIFO (deferral gamma)"
+    stages.append(s1)
+
+    s2 = SimConfig()
+    s2.scheduler.policy = "bacs_gated"
+    s2.trust.gamma_rule = "deferral_derived"
+    s2.__dict__["_name"] = "BACS (gated)"
+    stages.append(s2)
+
+    s3 = SimConfig()
+    s3.scheduler.policy = "bacs_plus"
+    s3.trust.gamma_rule = "deferral_derived"
+    s3.__dict__["_name"] = "BACS+ (observability)"
+    stages.append(s3)
+
+    recs = _sweep(stages, seeds, label_fn=lambda c: dict(stage=c.__dict__.get("_name")))
+    out = _agg(recs, "stage")
+    order = {c.__dict__["_name"]: i for i, c in enumerate(stages)}
+    out["_o"] = out["stage"].map(order)
+    return out.sort_values("_o").drop(columns="_o").reset_index(drop=True)
+
+
+def summary_stats(values) -> dict:
+    """Mean, std, median and a normal-approximation 95% CI for one metric.
+
+    Reported alongside the Wilcoxon test for the principal comparisons so the
+    headline percentages carry dispersion and interval estimates, not point
+    values alone.
+    """
+    a = np.asarray([v for v in values if np.isfinite(v)], float)
+    n = len(a)
+    if n == 0:
+        return dict(n=0, mean=np.nan, std=np.nan, median=np.nan,
+                    ci_lo=np.nan, ci_hi=np.nan)
+    mean = float(a.mean())
+    std = float(a.std(ddof=1)) if n > 1 else 0.0
+    half = 1.96 * std / np.sqrt(n) if n > 1 else 0.0
+    return dict(n=n, mean=mean, std=std, median=float(np.median(a)),
+                ci_lo=mean - half, ci_hi=mean + half)
+
+
+def cliffs_delta(a, b) -> float:
+    """Cliff's delta effect size for two independent samples, in [-1, 1].
+
+    A nonparametric complement to the Wilcoxon p-value: the probability that a
+    draw from `a` exceeds a draw from `b`, minus the reverse.
+    """
+    a = np.asarray([v for v in a if np.isfinite(v)], float)
+    b = np.asarray([v for v in b if np.isfinite(v)], float)
+    if len(a) == 0 or len(b) == 0:
+        return float("nan")
+    gt = (a[:, None] > b[None, :]).sum()
+    lt = (a[:, None] < b[None, :]).sum()
+    return float((gt - lt) / (len(a) * len(b)))

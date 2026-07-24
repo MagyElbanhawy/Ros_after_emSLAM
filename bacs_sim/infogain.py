@@ -51,13 +51,19 @@ class CoverageMap:
 # ------------------------------------------------------------------ Eq. (12)
 def surrogate_info(novelty: float, degree: int, loop_len: float,
                    cfg: InfoGainConfig, degree_ref: int = 8,
-                   loop_ref: float = 60.0) -> float:
-    """I_hat = w_v*novelty + w_d*(1 - degree_bar) + w_l*loop_bar."""
+                   loop_ref: float = 60.0, observability: float = 0.0) -> float:
+    """I_hat = w_v*novelty + w_d*(1 - degree_bar) + w_l*loop_bar [+ w_o*O_ij].
+
+    The observability term is the BACS+ extension (Section 4.4). It is zero for
+    the base surrogate and non-zero only when the scheduler passes an O_ij value,
+    so existing policies score identically to before.
+    """
     d_bar = min(degree / max(degree_ref, 1), 1.0)
     l_bar = min(loop_len / max(loop_ref, 1e-9), 1.0)
     return float(cfg.w_novelty * novelty
                  + cfg.w_degree * (1.0 - d_bar)
-                 + cfg.w_loop * l_bar)
+                 + cfg.w_loop * l_bar
+                 + cfg.w_obs * observability)
 
 
 # ------------------------------------------------------------------ Eq. (11)
@@ -80,6 +86,25 @@ def exact_info_gain(H: np.ndarray, idx_i, idx_j, omega: np.ndarray) -> float:
     Srel = Sii + Sjj - Sij - Sij.T
     M = np.eye(3) + omega @ Srel
     sign, logdet = np.linalg.slogdet(M)
+    return float(0.5 * logdet) if sign > 0 else 0.0
+
+
+def exact_info_from_cov(Sigma: np.ndarray, i: int, j: int,
+                        omega: np.ndarray) -> float:
+    """Eq. (11) evaluated from a precomputed graph covariance.
+
+    Same quantity as `exact_info_gain`, but takes the already-inverted
+    covariance and the two node indices (each a 3-DoF SE(2) pose). Used by the
+    S7 validation so the O(n^3) inversion happens once per graph rather than once
+    per delivered constraint.
+    """
+    ii = [3 * i, 3 * i + 1, 3 * i + 2]
+    jj = [3 * j, 3 * j + 1, 3 * j + 2]
+    Sii = Sigma[np.ix_(ii, ii)]
+    Sjj = Sigma[np.ix_(jj, jj)]
+    Sij = Sigma[np.ix_(ii, jj)]
+    Srel = Sii + Sjj - Sij - Sij.T
+    sign, logdet = np.linalg.slogdet(np.eye(3) + omega @ Srel)
     return float(0.5 * logdet) if sign > 0 else 0.0
 
 
