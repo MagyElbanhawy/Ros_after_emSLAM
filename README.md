@@ -29,6 +29,7 @@ p = 0.031).
 bacs_sim/            simulation package (module layout mirrors the manuscript)
 scripts/reproduce.py CLI that regenerates the paper's experiment tables (CSV)
 tests/               smoke + reproducibility tests
+paper/               the full manuscript (BACS_full_paper.docx)
 ```
 
 The `bacs_sim` package modules map onto the paper's sections — see
