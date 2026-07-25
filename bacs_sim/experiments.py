@@ -337,6 +337,48 @@ def s7c_incremental_validation(seeds=range(3), counts=(2, 3, 4, 5),
     return _agg(recs, "n_robots")
 
 
+def s7c_paired(seeds=range(10), counts=(2, 3, 4, 5), policy="bacs_gated",
+               session_s=240.0):
+    """Per-seed S7-C with the paired observability test.
+
+    Returns (summary, raw). `raw` has one row per (N, seed) with rho_base,
+    rho_plus and their difference; `summary` aggregates per N and runs a
+    one-sided Wilcoxon signed-rank test of H0: median(rho_plus - rho_base) = 0
+    against H1: > 0. Reporting per-seed rho (rather than one pooled correlation)
+    stops a single large candidate pool from dominating the statistic.
+    """
+    from scipy.stats import wilcoxon
+    raw = []
+    for n in counts:
+        for s in seeds:
+            c = _mk(seed=s, n_robots=n)
+            c.world.session_s = session_s
+            c.scheduler.policy = policy
+            pre = precompute(c)
+            r = run(c, precomputed=pre, collect_graph=True)
+            rb, rp, npts = _s7c_rho(r.extras, c.infogain.w_obs)
+            raw.append(dict(n_robots=n, seed=s, rho_base=rb, rho_plus=rp,
+                            drho=rp - rb, n_candidates=npts))
+    raw = pd.DataFrame(raw)
+    rows = []
+    for n in counts:
+        d = raw[raw.n_robots == n]
+        dr = d["drho"].values
+        dr = dr[np.isfinite(dr)]
+        if len(dr) >= 5 and not np.allclose(dr, 0):
+            p = float(wilcoxon(dr, alternative="greater").pvalue)
+        else:
+            p = float("nan")
+        rows.append(dict(
+            n_robots=n,
+            rho_base_mean=float(d.rho_base.mean()), rho_base_sd=float(d.rho_base.std()),
+            rho_plus_mean=float(d.rho_plus.mean()), rho_plus_sd=float(d.rho_plus.std()),
+            drho_mean=float(np.mean(dr)), drho_median=float(np.median(dr)),
+            n_pos=int((dr > 0).sum()), n_seeds=int(len(dr)),
+            wilcoxon_p_greater=p))
+    return pd.DataFrame(rows), raw
+
+
 def _s7c_rho(extras, w_obs):
     """Spearman rho(I_hat, I_exact) and rho(I_hat+, I_exact) over all candidates,
     using incremental gain against the graph state at each candidate's window."""
