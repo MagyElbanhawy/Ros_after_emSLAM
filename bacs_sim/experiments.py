@@ -457,12 +457,14 @@ def _s7c_rho(extras, w_obs):
 
 # ------------------------------------------------------------------------ S8
 def s8_observability(seeds=range(5), counts=(2, 3, 4, 5), session_s=480.0):
-    """Observability ablation: does the BACS+ term recover the large-team regime?
+    """Observability ablation across team size.
 
-    Compares FIFO, plain gated BACS, and BACS+ across team size. The plain
-    scheduler's advantage over FIFO is known to reverse beyond three robots
-    (H3); this measures whether adding the observability term keeps pose RMSE
-    below FIFO where the plain surrogate does not.
+    Compares FIFO, plain gated BACS, and BACS+. The PRIMARY metric is
+    map-alignment RMSE (`align_rmse`) -- the inter-robot map-fusion consistency
+    the paper is about -- because the 30-seed study (`s8_30seed_raw.csv`,
+    scripts/run_s8_30seed.py) shows per-step pose RMSE is odometry-drift-bound
+    and carries no significant policy effect, whereas alignment separates the
+    policies cleanly. `pose_rmse` is retained as a secondary column.
     """
     recs = []
     for n in counts:
@@ -482,7 +484,8 @@ def s8_observability(seeds=range(5), counts=(2, 3, 4, 5), session_s=480.0):
                 c.trust.gamma_rule = "deferral_derived"
                 r = run(c, precomputed=pre)
                 recs.append(dict(n_robots=n, policy=p, seed=s,
-                                 pose_rmse=r.pose_rmse, align_rmse=r.align_rmse,
+                                 align_rmse=r.align_rmse,   # PRIMARY metric
+                                 pose_rmse=r.pose_rmse,     # secondary
                                  trust_yield=r.trust_yield,
                                  n_delivered=r.n_delivered))
     return _agg(recs, ["n_robots", "policy"])

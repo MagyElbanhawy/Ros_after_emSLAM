@@ -32,8 +32,14 @@ tests/               smoke + reproducibility tests
 paper_results/       frozen CSVs backing the manuscript tables
 ros2_ws/             reference ROS 2 scheduler node (bacs_scheduler) for deployment
 hardware/            LoRa parameters + physical-experiment protocol
-paper/               the full manuscript (BACS_full_paper.docx)
+paper/               manuscripts: BACS_full_paper.docx (original) + BACS_revised_manuscript.{md,docx}
+paper_figures/       generated manuscript figures (scripts/make_figures.py)
 ```
+
+The **revised manuscript** (`paper/BACS_revised_manuscript.md` / `.docx`) is
+restructured around the validated findings — deferral-derived γ (S9),
+incremental surrogate validation (S7-C), and the map-alignment result (S8) — with
+tables and figures generated from `paper_results/`.
 
 The `bacs_sim` package modules map onto the paper's sections — see
 [`bacs_sim/README.md`](bacs_sim/README.md) for the file-to-section table and the

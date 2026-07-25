@@ -99,29 +99,51 @@ def main():
     raw = os.path.join(OUT, "s8_30seed_raw.csv")
     df.to_csv(raw, index=False)
     print(f"raw -> {raw}\n")
+    write_tables(df, args.counts)
 
-    # ---- summary table ----
-    print(f"{'N':>2} {'arm':>12} {'pose mean':>10} {'median':>8} {'SD':>7} "
-          f"{'95% CI':>16} {'align':>8}")
-    for n in args.counts:
+
+def write_tables(df, counts):
+    """Derive the frozen summary + paired-test tables. PRIMARY metric is
+    align_rmse (map-fusion consistency); pose_rmse is secondary."""
+    summ_rows, test_rows = [], []
+
+    print(f"{'N':>2} {'arm':>12} | {'ALIGN mean':>10} {'median':>8} {'SD':>7} "
+          f"{'95% CI':>17} | {'pose mean':>9} {'pose SD':>7}")
+    for n in counts:
         for arm in ARMS:
-            v = df[(df.n_robots == n) & (df.arm == arm)]["pose_rmse"].values
-            a = df[(df.n_robots == n) & (df.arm == arm)]["align_rmse"].values
-            st = summary_stats(v)
-            ast = summary_stats(a)
-            print(f"{n:>2} {arm:>12} {st['mean']:>10.4f} {st['median']:>8.4f} "
-                  f"{st['std']:>7.4f} [{st['ci_lo']:.4f},{st['ci_hi']:.4f}] "
-                  f"{ast['mean']:>8.4f}")
+            al = df[(df.n_robots == n) & (df.arm == arm)]["align_rmse"].values
+            po = df[(df.n_robots == n) & (df.arm == arm)]["pose_rmse"].values
+            a, p = summary_stats(al), summary_stats(po)
+            summ_rows.append(dict(n_robots=n, arm=arm,
+                                  align_mean=a["mean"], align_median=a["median"],
+                                  align_sd=a["std"], align_ci_lo=a["ci_lo"],
+                                  align_ci_hi=a["ci_hi"], pose_mean=p["mean"],
+                                  pose_median=p["median"], pose_sd=p["std"]))
+            print(f"{n:>2} {arm:>12} | {a['mean']:>10.4f} {a['median']:>8.4f} "
+                  f"{a['std']:>7.4f} [{a['ci_lo']:.4f},{a['ci_hi']:.4f}] | "
+                  f"{p['mean']:>9.4f} {p['std']:>7.4f}")
 
-    # ---- paired tests ----
-    print("\nPaired tests (pose_rmse; negative delta => first arm lower/better):")
-    for n in args.counts:
-        for a, b in [("plus_0.30_6", "fifo"), ("plus_0.30_6", "bacs_gated"),
-                     ("plus_0.60_5", "fifo"), ("bacs_gated", "fifo")]:
-            r = paired(df, n, a, b)
-            imp = 100 * (r["b_mean"] - r["a_mean"]) / r["b_mean"] if r["b_mean"] else float("nan")
-            print(f"  N={n} {a:>12} vs {b:>10}: {a} {r['a_mean']:.4f} vs {r['b_mean']:.4f} "
-                  f"({imp:+.1f}%)  Wilcoxon p={r['p']:.3g}  delta={r['delta']:+.2f}")
+    print("\nPaired tests (PRIMARY align_rmse; negative delta => first arm better):")
+    for n in counts:
+        for a, b in [("bacs_gated", "fifo"), ("plus_0.30_6", "fifo"),
+                     ("plus_0.60_5", "fifo"), ("plus_0.30_6", "bacs_gated")]:
+            for metric in ("align_rmse", "pose_rmse"):
+                r = paired(df, n, a, b, metric=metric)
+                imp = 100 * (r["b_mean"] - r["a_mean"]) / r["b_mean"] if r["b_mean"] else float("nan")
+                test_rows.append(dict(n_robots=n, metric=metric, arm_a=a, arm_b=b,
+                                      a_mean=r["a_mean"], b_mean=r["b_mean"],
+                                      improvement_pct=imp, wilcoxon_p=r["p"],
+                                      cliffs_delta=r["delta"]))
+                if metric == "align_rmse":
+                    sig = "*" if (r["p"] == r["p"] and r["p"] < 0.05) else " "
+                    print(f"  N={n} {a:>12} vs {b:>10} [align]: {r['a_mean']:.4f} vs "
+                          f"{r['b_mean']:.4f} ({imp:+.1f}%) p={r['p']:.3g}{sig} "
+                          f"delta={r['delta']:+.2f}")
+
+    pd.DataFrame(summ_rows).to_csv(os.path.join(OUT, "s8_30seed_summary.csv"), index=False)
+    pd.DataFrame(test_rows).to_csv(os.path.join(OUT, "s8_30seed_tests.csv"), index=False)
+    print("\nsummary -> paper_results/s8_30seed_summary.csv")
+    print("tests   -> paper_results/s8_30seed_tests.csv")
     print("done")
 
 
