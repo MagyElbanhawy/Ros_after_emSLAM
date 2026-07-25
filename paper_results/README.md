@@ -10,7 +10,9 @@ the BACS+ / validation additions).
 | `progression.csv` | EMRMF-original → compliant FIFO → BACS → BACS+ | the research progression, one change per stage |
 | `s7c_incremental_validation.csv` | Spearman ρ(Î, incremental MI) and ρ(Î⁺, ·) by team size | **the correct validation**: surrogate fidelity and the observability gain |
 | `s7_surrogate_validation.csv` | ρ against odometry-prior (correct) vs converged-posterior (diagnostic) | shows the baseline artifact that inverted the original ρ |
-| `s8_observability.csv` | FIFO / BACS / BACS+ pose RMSE by team size | whether the observability term helps large teams |
+| `s8_observability.csv` | FIFO / BACS / BACS+ pose RMSE by team size (3 seeds) | quick-look; superseded by the 30-seed run |
+| `s8_30seed_raw.csv` | 30 held-out seeds, pose + align RMSE, 4 arms | **decisive end-to-end run** (paired Wilcoxon, Cliff's δ) |
+| `s7c_paired.csv` | per-seed ρ and paired Δρ test | is the observability fidelity gain per-seed consistent? |
 | `s9_deferral_gamma.csv` | decay-coefficient rules | deferral-derived γ recovers the empirical optimum |
 
 Each CSV reports mean and standard deviation over the seed set noted in the
@@ -46,8 +48,28 @@ principal comparisons.
   BACS-gated (0.322). Recalibrating γ alone (compliant FIFO) does not help
   FIFO's RMSE though it raises trust yield; the scheduler is where the
   improvement is. BACS+ ≈ BACS on RMSE at N = 2.
-- **S8 (observability RMSE across N) — not the headline; noisy at low seeds.**
-  The per-seed spread (std ≈ 0.07–0.16) exceeds the BACS+/BACS RMSE gap, so these
-  runs do **not** by themselves establish that the term lowers RMSE at large N.
-  The case for BACS+ rests on S7-C (surrogate fidelity), not on S8. Resolving any
-  RMSE effect needs the 20–30 seeds of Section 7.
+- **S8 at 30 held-out seeds (`s8_30seed_raw.csv`) — the decisive end-to-end run.**
+  Seeds 10–39 (disjoint from screening), N = 2..5, FIFO / BACS-gated / BACS+
+  (0.30/6 and 0.60/5), corrected deferral-γ. Two clean findings:
+  - **Pose RMSE: no significant policy effect at any N** (all paired Wilcoxon
+    p > 0.11). The large ±20–30% swings seen in few-seed runs — including the
+    apparent H3 "reversal" — were small-sample noise. Absolute trajectory error
+    is dominated by each robot's own odometry drift and is largely insensitive to
+    which inter-robot constraints are scheduled.
+  - **Map-alignment RMSE: the BACS family decisively beats FIFO** — the metric
+    that actually measures inter-robot map-fusion consistency. N=2: +47%
+    (p≈4e-8, Cliff's δ≈−0.8); N=3: +48% (p≈2e-9, δ≈−0.9); N=4: +21–25%
+    (p<0.011); N=5: BACS+ (0.30/6) +28.7% (p=7e-4, δ≈−0.53), where plain
+    BACS-gated drops to marginal (+17.9%, p=0.067).
+  - **Observability term vs plain BACS:** no *significant* pairwise difference on
+    either metric (p = 0.2–0.98). Its point estimate is best at N=5 on alignment,
+    and — unlike plain BACS — BACS+ (0.30/6) keeps a *significant* alignment edge
+    over FIFO at N=5, consistent with S7-C. The two BACS+ settings (0.30/6 vs
+    0.60/5) are statistically indistinguishable; 0.30/6 is preferred as the
+    S7-C-validated one.
+
+  **Bottom line:** information-optimal scheduling is *not* trajectory-RMSE-optimal
+  (RMSE is odometry-bound), but it *is* map-alignment-optimal — a large,
+  significant fusion-consistency win. BACS+ is justified by surrogate fidelity
+  (S7-C) and preserves the alignment win into the large-team regime; it does not
+  claim a pose-RMSE improvement.
