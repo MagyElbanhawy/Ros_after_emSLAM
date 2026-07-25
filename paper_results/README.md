@@ -37,6 +37,11 @@ principal comparisons.
   +0.19, with lower variance). BACS+ improves the fidelity of the
   transmitter-side approximation to true graph information — a principled reason
   for the observability term, independent of RMSE.
+- **S7-C paired (`s7c_paired.csv`) — unanimous.** Per-seed (not pooled) Δρ =
+  ρ⁺ − ρ_base is positive for **every one of 40 runs** (10 seeds × N=2..5);
+  one-sided Wilcoxon p = 9.8e-4 at every N (the floor for n=10). Median Δρ ≈
+  +0.10 to +0.23. The observability term improves surrogate fidelity
+  consistently, not on average — the airtight statistical basis for BACS+.
 - **The original ρ was an evaluation artifact.** `s7_surrogate_validation.csv`
   documents it: scoring against the *converged posterior* (which already
   contains each edge and its neighbours) gives strongly negative ρ (≈ −0.4 to
