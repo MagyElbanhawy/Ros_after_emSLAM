@@ -134,7 +134,8 @@ def run(cfg: SimConfig, precomputed=None, collect_graph: bool = False) -> RunRes
                         acc += time_on_air(c.payload_bytes, cfg.lora)
                 _score_batch(order, queue_of, cfg, gamma, gamma_ctl, truths,
                              coverage[rid], degree[rid], agents[rid], rid,
-                             map_age, w, fused, pair_obs, use_obs)
+                             map_age, w, fused, pair_obs, use_obs,
+                             log_window=(wi if collect_graph else None))
             if cfg.scheduler.expire_below_trust:
                 pending[rid] = [c for c in pending[rid]
                                 if c.theta_hat >= cfg.trust.floor * 1.5]
@@ -166,6 +167,8 @@ def run(cfg: SimConfig, precomputed=None, collect_graph: bool = False) -> RunRes
                     coverage[rid].mark(truths[rid].odom[c.idx_from][:2])
                     degree[rid][c.idx_from] += 1
                     pair_obs.mark(c.rid_from, c.rid_to)
+                    if collect_graph:
+                        c._deliver_win = wi
 
             rest = []
             for c in pending[rid]:
@@ -258,6 +261,13 @@ def run(cfg: SimConfig, precomputed=None, collect_graph: bool = False) -> RunRes
         res.extras["hessian"] = H_final
         res.extras["delivered"] = delivered
         res.extras["omega"] = om
+        res.extras["truths"] = truths
+        # Every candidate presented to the scheduler (delivered or not), tagged
+        # at first scoring with its window and surrogate values. Used by the
+        # incremental S7-C validation, which must score all candidates to avoid
+        # the selection bias of validating only on what BACS chose to deliver.
+        res.extras["scored"] = [c for lst in cands.values() for c in lst
+                                if hasattr(c, "_win")]
     return res
 
 
@@ -294,7 +304,8 @@ def precompute(cfg: SimConfig):
 
 
 def _score_batch(cands, queue_of, cfg, gamma, gamma_ctl, truths, cov, degree,
-                 agent, rid, map_age, w, fused, pair_obs=None, use_obs=False):
+                 agent, rid, map_age, w, fused, pair_obs=None, use_obs=False,
+                 log_window=None):
     """Populate theta_hat, info_hat and utility for one window's candidates."""
     for c in cands:
         # Expected further deferral: with an oversupply ratio R, a candidate
@@ -312,7 +323,16 @@ def _score_batch(cands, queue_of, cfg, gamma, gamma_ctl, truths, cov, degree,
         deg = int(degree[c.idx_from])
         loop = abs(truths[rid].t[c.idx_from] - truths[c.rid_to].t[c.idx_to])
         obs = pair_obs.score(c.rid_from, c.rid_to) if (use_obs and pair_obs) else 0.0
-        ig = surrogate_info(nov, deg, loop, cfg.infogain, observability=obs)
+        base_ig = surrogate_info(nov, deg, loop, cfg.infogain, observability=0.0)
+        ig = base_ig + cfg.infogain.w_obs * obs if use_obs else base_ig
         th, ig = agent.on_declare(th, ig)
         c.theta_hat, c.info_hat = th, ig
         c.utility = compute_utility(c, cfg.scheduler, cfg.lora)
+        if log_window is not None and not hasattr(c, "_win"):
+            # First time this candidate is scored: snapshot for S7-C. `_obs` is
+            # the observability score at presentation; I_hat = base, I_hat+ =
+            # base + w_obs*obs.
+            c._win = int(log_window)
+            c._info_base = float(base_ig)
+            c._obs = float(obs if use_obs else pair_obs.score(c.rid_from, c.rid_to)
+                           if pair_obs else 0.0)

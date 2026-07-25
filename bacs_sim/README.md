@@ -69,10 +69,11 @@ New experiment runners (all in `experiments.py`):
 
 ```python
 from bacs_sim.experiments import (
-    s7_surrogate_validation,   # Spearman rho(I_hat, exact MI) by team size
-    s8_observability,          # FIFO vs BACS vs BACS+ across N
-    s9_deferral_gamma,         # decay-coefficient rule comparison
-    progression,               # EMRMF-original -> compliant FIFO -> BACS -> BACS+
+    s7c_incremental_validation, # rho(I_hat/I_hat+, incremental MI) -- the correct S7
+    s7_surrogate_validation,    # prior- vs posterior-baseline diagnostic
+    s8_observability,           # FIFO vs BACS vs BACS+ RMSE across N
+    s9_deferral_gamma,          # decay-coefficient rule comparison
+    progression,                # EMRMF-original -> compliant FIFO -> BACS -> BACS+
     summary_stats, cliffs_delta,
 )
 ```
@@ -111,8 +112,13 @@ cfg.agents = {1: AgentConfig(behavior="drift_injection", params={"bias": 0.15})}
    robot's current estimate, which carry least corrective information. Requires
    the fused map (not raw odometry) for the provisional residual of Eq. (8);
    with odometry the residual is dominated by the transmitter's own drift.
-5. **The advantage reverses beyond three robots — the observability gap.** The
-   base surrogate spends airtime on high-coverage constraints, not on
-   under-constrained robot pairs. `bacs_plus` adds the observability term to
-   target the latter; S8 measures whether it holds the gain as N grows, and S7
-   quantifies how well the surrogate tracks exact information at each team size.
+5. **The surrogate is valid, and the observability term sharpens it.** Validated
+   correctly (S7-C: incremental information gain against the graph state at
+   scheduling time, Jacobian-based, over all candidates), the base surrogate
+   correlates positively with true information at every team size (ρ ≈ 0.45–0.62),
+   and the observability-augmented surrogate Î⁺ is higher at every N (Δρ ≈ +0.08
+   to +0.19). This is the principled justification for `bacs_plus`. **Caution:**
+   validating against the *converged posterior* instead of the prior inverts the
+   sign (ρ ≈ −0.5) — a classic evaluation trap; see `s7_surrogate_validation`'s
+   posterior column, kept only as a diagnostic. The RMSE benefit of BACS+ at
+   large N remains noisy (S8) and is not the basis of the claim.

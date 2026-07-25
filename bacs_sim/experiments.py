@@ -226,34 +226,233 @@ def s7_surrogate_validation(seeds=range(3), counts=(2, 3, 4, 5),
             c.scheduler.policy = policy
             pre = precompute(c)
             r = run(c, precomputed=pre, collect_graph=True)
-            graph = r.extras["graph"]
-            H = r.extras["hessian"]
-            omega = r.extras["omega"]
-            delivered = r.extras["delivered"]
-            rho, npairs = _surrogate_rho(graph, H, omega, delivered)
-            recs.append(dict(n_robots=n, seed=s, rho=rho, n_pairs=npairs,
-                             n_delivered=r.n_delivered, pose_rmse=r.pose_rmse))
+            out = _surrogate_rho(r.extras)
+            out.update(dict(n_robots=n, seed=s, n_delivered=r.n_delivered,
+                            pose_rmse=r.pose_rmse))
+            recs.append(out)
     return _agg(recs, "n_robots")
 
 
-def _surrogate_rho(graph, H, omega, delivered):
-    """Spearman rho between surrogate info and exact MI over delivered edges."""
-    if H is None or not delivered:
-        return float("nan"), 0
+def _prior_covariance(truths, omega):
+    """Covariance of the odometry-only graph: the prior a delivered inter-robot
+    constraint is measured against. Node indexing matches the main graph, which
+    adds all of robot 0's nodes, then robot 1's, and so on."""
+    from .posegraph import PoseGraph
+    from .world import relative
+    g = PoseGraph()
+    for t in truths:
+        for k in range(len(t.odom)):
+            g.add_node((t.rid, k), t.odom[k])
+    for t in truths:
+        for k in range(1, len(t.odom)):
+            g.add_edge(g.idx((t.rid, k - 1)), g.idx((t.rid, k)),
+                       relative(t.odom[k - 1], t.odom[k]), omega, 1.0)
+    _, H = g.optimize(iterations=1)
+    if H is None:
+        return None
     Hd = H.toarray() if hasattr(H, "toarray") else np.asarray(H)
     try:
-        Sigma = np.linalg.inv(Hd + 1e-9 * np.eye(Hd.shape[0]))
+        return np.linalg.inv(Hd + 1e-9 * np.eye(Hd.shape[0]))
     except np.linalg.LinAlgError:
-        return float("nan"), 0
-    surro, exact = [], []
+        return None
+
+
+def _surrogate_rho(extras):
+    """Spearman rho between surrogate info and exact information over delivered
+    edges, computed two ways:
+
+      rho_prior      -- exact info of each edge against the odometry-only prior
+                        (the methodologically correct baseline: how much the edge
+                        tightens the relative pose relative to dead reckoning);
+      rho_posterior  -- against the fully converged graph covariance (retained
+                        for comparison; this double-counts neighbouring edges and
+                        is the wrong baseline).
+    """
+    graph = extras.get("graph")
+    delivered = extras.get("delivered") or []
+    omega = extras.get("omega")
+    truths = extras.get("truths")
+    out = dict(rho_prior=float("nan"), rho_posterior=float("nan"), n_pairs=0)
+    if graph is None or not delivered:
+        return out
+
+    edges = []
     for c in delivered:
         i = graph.idx((c.rid_from, c.idx_from))
         j = graph.idx((c.rid_to, c.idx_to))
+        if i is not None and j is not None:
+            edges.append((c.info_hat, i, j))
+    out["n_pairs"] = len(edges)
+    if not edges:
+        return out
+    surro = [e[0] for e in edges]
+
+    S_prior = _prior_covariance(truths, omega) if truths is not None else None
+    if S_prior is not None:
+        ex = [exact_info_from_cov(S_prior, i, j, omega) for _, i, j in edges]
+        out["rho_prior"] = rank_correlation(surro, ex)
+
+    H = extras.get("hessian")
+    if H is not None:
+        Hd = H.toarray() if hasattr(H, "toarray") else np.asarray(H)
+        try:
+            S_post = np.linalg.inv(Hd + 1e-9 * np.eye(Hd.shape[0]))
+            ex = [exact_info_from_cov(S_post, i, j, omega) for _, i, j in edges]
+            out["rho_posterior"] = rank_correlation(surro, ex)
+        except np.linalg.LinAlgError:
+            pass
+    return out
+
+
+# ---------------------------------------------------------------------- S7-C
+def s7c_incremental_validation(seeds=range(3), counts=(2, 3, 4, 5),
+                               policy="bacs_gated", session_s=240.0):
+    """Incremental information-gain validation (the correct S7 for scheduling).
+
+    For every candidate presented to the scheduler -- delivered or not, so the
+    validation set is not biased by BACS's own choices -- compute the exact
+    incremental information gain against the graph state *at the window the
+    candidate was presented*:
+
+        I_c = 1/2 log det( I + Omega_c J_c Sigma_ij,t J_c^T )
+
+    where Sigma_ij,t is the joint marginal covariance of the two poses in the
+    graph containing odometry plus everything delivered before window t, and J_c
+    is the SE(2) relative-pose Jacobian at the current linearisation. Reports
+    Spearman rho of this against the base surrogate (I_hat) and the
+    observability-augmented surrogate (I_hat+), per team size.
+    """
+    recs = []
+    for n in counts:
+        for s in seeds:
+            c = _mk(seed=s, n_robots=n)
+            c.world.session_s = session_s
+            c.scheduler.policy = policy
+            pre = precompute(c)
+            r = run(c, precomputed=pre, collect_graph=True)
+            rho_base, rho_plus, npts = _s7c_rho(r.extras, c.infogain.w_obs)
+            recs.append(dict(n_robots=n, seed=s, rho_base=rho_base,
+                             rho_plus=rho_plus, n_candidates=npts,
+                             pose_rmse=r.pose_rmse))
+    return _agg(recs, "n_robots")
+
+
+def s7c_paired(seeds=range(10), counts=(2, 3, 4, 5), policy="bacs_gated",
+               session_s=240.0):
+    """Per-seed S7-C with the paired observability test.
+
+    Returns (summary, raw). `raw` has one row per (N, seed) with rho_base,
+    rho_plus and their difference; `summary` aggregates per N and runs a
+    one-sided Wilcoxon signed-rank test of H0: median(rho_plus - rho_base) = 0
+    against H1: > 0. Reporting per-seed rho (rather than one pooled correlation)
+    stops a single large candidate pool from dominating the statistic.
+    """
+    from scipy.stats import wilcoxon
+    raw = []
+    for n in counts:
+        for s in seeds:
+            c = _mk(seed=s, n_robots=n)
+            c.world.session_s = session_s
+            c.scheduler.policy = policy
+            pre = precompute(c)
+            r = run(c, precomputed=pre, collect_graph=True)
+            rb, rp, npts = _s7c_rho(r.extras, c.infogain.w_obs)
+            raw.append(dict(n_robots=n, seed=s, rho_base=rb, rho_plus=rp,
+                            drho=rp - rb, n_candidates=npts))
+    raw = pd.DataFrame(raw)
+    rows = []
+    for n in counts:
+        d = raw[raw.n_robots == n]
+        dr = d["drho"].values
+        dr = dr[np.isfinite(dr)]
+        if len(dr) >= 5 and not np.allclose(dr, 0):
+            p = float(wilcoxon(dr, alternative="greater").pvalue)
+        else:
+            p = float("nan")
+        rows.append(dict(
+            n_robots=n,
+            rho_base_mean=float(d.rho_base.mean()), rho_base_sd=float(d.rho_base.std()),
+            rho_plus_mean=float(d.rho_plus.mean()), rho_plus_sd=float(d.rho_plus.std()),
+            drho_mean=float(np.mean(dr)), drho_median=float(np.median(dr)),
+            n_pos=int((dr > 0).sum()), n_seeds=int(len(dr)),
+            wilcoxon_p_greater=p))
+    return pd.DataFrame(rows), raw
+
+
+def _s7c_rho(extras, w_obs):
+    """Spearman rho(I_hat, I_exact) and rho(I_hat+, I_exact) over all candidates,
+    using incremental gain against the graph state at each candidate's window."""
+    from collections import defaultdict
+    from .posegraph import PoseGraph, error_and_jacobians
+    from .world import relative
+
+    truths = extras.get("truths")
+    om = extras.get("omega")
+    scored = extras.get("scored") or []
+    delivered = extras.get("delivered") or []
+    if truths is None or not scored:
+        return float("nan"), float("nan"), 0
+
+    def build_prior():
+        g = PoseGraph()
+        for t in truths:
+            for k in range(len(t.odom)):
+                g.add_node((t.rid, k), t.odom[k])
+        for t in truths:
+            for k in range(1, len(t.odom)):
+                g.add_edge(g.idx((t.rid, k - 1)), g.idx((t.rid, k)),
+                           relative(t.odom[k - 1], t.odom[k]), om, 1.0)
+        return g
+
+    g = build_prior()
+    d_by_win = defaultdict(list)
+    for c in delivered:
+        d_by_win[getattr(c, "_deliver_win", -1)].append(c)
+
+    # Incrementally grow the graph window by window, caching (estimate, cov) at
+    # each window that has candidates to score.
+    wins = sorted({c._win for c in scored})
+    cache, added_upto = {}, -1
+    for w in wins:
+        for ww in range(added_upto + 1, w):
+            for c in d_by_win.get(ww, []):
+                i = g.idx((c.rid_from, c.idx_from))
+                j = g.idx((c.rid_to, c.idx_to))
+                if i is not None and j is not None:
+                    g.add_edge(i, j, c.z, om, max(getattr(c, "theta", 1.0), 1e-3))
+        added_upto = w - 1
+        X, H = g.optimize(iterations=1)
+        if H is None:
+            cache[w] = (None, None)
+            continue
+        Hd = H.toarray() if hasattr(H, "toarray") else np.asarray(H)
+        try:
+            Sig = np.linalg.inv(Hd + 1e-9 * np.eye(Hd.shape[0]))
+        except np.linalg.LinAlgError:
+            Sig = None
+        cache[w] = (X.copy() if X is not None else None, Sig)
+
+    Ihat, Iplus, Iexact = [], [], []
+    for c in scored:
+        X, Sig = cache.get(c._win, (None, None))
+        if Sig is None or X is None:
+            continue
+        i = g.idx((c.rid_from, c.idx_from))
+        j = g.idx((c.rid_to, c.idx_to))
         if i is None or j is None:
             continue
-        surro.append(c.info_hat)
-        exact.append(exact_info_from_cov(Sigma, i, j, omega))
-    return rank_correlation(surro, exact), len(surro)
+        _, A, B = error_and_jacobians(X[i], X[j], c.z)
+        J = np.hstack([A, B])                      # 3x6 relative-pose Jacobian
+        ix = [3 * i, 3 * i + 1, 3 * i + 2, 3 * j, 3 * j + 1, 3 * j + 2]
+        Spair = Sig[np.ix_(ix, ix)]                # 6x6 joint marginal
+        M = np.eye(3) + om @ (J @ Spair @ J.T)
+        sign, logdet = np.linalg.slogdet(M)
+        Iexact.append(0.5 * logdet if sign > 0 else 0.0)
+        Ihat.append(c._info_base)
+        Iplus.append(c._info_base + w_obs * c._obs)
+
+    return (rank_correlation(Ihat, Iexact),
+            rank_correlation(Iplus, Iexact), len(Iexact))
 
 
 # ------------------------------------------------------------------------ S8
