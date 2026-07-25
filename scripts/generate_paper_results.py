@@ -37,6 +37,8 @@ def main() -> None:
         ("s8_observability", lambda: X.s8_observability(seeds=range(max(n // 2, 2)))),
         ("s7_surrogate_validation",
          lambda: X.s7_surrogate_validation(seeds=range(max(n // 2, 2)))),
+        ("s7c_incremental_validation",
+         lambda: X.s7c_incremental_validation(seeds=range(max(n // 2, 2)))),
     ]
     for name, fn in jobs:
         print(f"[{name}] running...", flush=True)

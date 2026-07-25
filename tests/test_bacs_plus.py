@@ -117,5 +117,20 @@ def test_collect_graph_exposes_validation_data():
 def test_s7_returns_finite_rho():
     from bacs_sim.experiments import s7_surrogate_validation
     df = s7_surrogate_validation(seeds=range(1), counts=(2,), session_s=240.0)
-    assert "rho_mean" in df.columns
-    assert np.isfinite(df["rho_mean"].iloc[0])
+    # prior-based (correct baseline) and posterior (diagnostic) both reported
+    assert "rho_prior_mean" in df.columns
+    assert "rho_posterior_mean" in df.columns
+    assert np.isfinite(df["rho_prior_mean"].iloc[0])
+
+
+def test_s7c_incremental_positive_and_finite():
+    """The incremental (correct) validation should be finite and, at N=2,
+    positive — the base surrogate does track true information gain."""
+    from bacs_sim.experiments import s7c_incremental_validation
+    df = s7c_incremental_validation(seeds=range(1), counts=(2,), session_s=240.0)
+    for col in ("rho_base_mean", "rho_plus_mean", "n_candidates_mean"):
+        assert col in df.columns
+    assert np.isfinite(df["rho_base_mean"].iloc[0])
+    assert df["rho_base_mean"].iloc[0] > 0
+    # observability-augmented surrogate should not correlate worse than the base
+    assert df["rho_plus_mean"].iloc[0] >= df["rho_base_mean"].iloc[0] - 0.1
